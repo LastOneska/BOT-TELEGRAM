@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from math import isfinite
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,15 +12,28 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import ALERT_SCHEDULE, CATEGORIES, CITY, PICKUP_FEE, PRICE_PER_KM
-from database import Database
+from config import (
+    ALERT_SCHEDULE,
+    CATEGORIES,
+    CITY,
+    PICKUP_FEE,
+    PRICE_PER_KM,
+    RP_PER_KM_MAX,
+    RP_PER_KM_MIN,
+)
+from database import Database, DuplicateOrderError
 from prediction import (
     format_category_schedule,
     is_peak_time,
     next_peak_label,
     score_hotspot,
 )
-from pricing import format_rupiah, suggest_price
+from pricing import (
+    format_price_table,
+    format_rupiah,
+    suggest_price,
+    validate_price_rates,
+)
 from services.hotspots import HotspotService, HotspotServiceError
 from services.weather import WeatherUnavailable, get_current_weather
 
@@ -47,8 +60,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /jam — jadwal puncak berdasarkan jenis lokasi\n"
         "• /alert on atau /alert off — atur pengingat\n"
         "• /tawar <km> — hitung rentang saran tarif\n"
-        "• /catat <km> <harga> — simpan order yang selesai\n"
+        "• /harga — lihat tabel saran harga total jemput + antar\n"
+        "• /catat <km> <harga> <waktu_diterima> [id_order]\n"
+        "  — simpan order yang selesai\n"
         "• /rekap — lihat pendapatan hari ini\n"
+        "• /setkm <min> <maks> atau /resetharga — atur patokan harga\n"
         "• /help — panduan singkat\n\n"
         "Prediksi bersifat perkiraan, bukan data order real-time. "
         "Bot tidak mengakses aplikasi ojol; penerimaan order dan penawaran "
@@ -61,11 +77,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         "Contoh penggunaan:\n"
         "• /tawar 4.5\n"
-        "• /catat 4.5 20000\n"
+        "• /harga\n"
+        "• /catat 4.5 20000 14:13\n"
+        "• /catat 4.5 20000 2026-11-02T14:13 ORDER-123\n"
+        "• /setkm 1950 2500\n"
         "• /alert on\n"
         "• /rekap\n\n"
-        "Gunakan titik untuk desimal jarak dan masukkan harga sebagai angka "
-        "rupiah tanpa pemisah. Tarif dasar dapat disesuaikan di config.py."
+        "Gunakan titik untuk desimal jarak, masukkan harga sebagai angka "
+        "rupiah tanpa pemisah, dan waktu diterima dalam WIB (HH:MM untuk hari "
+        "ini atau YYYY-MM-DDTHH:MM). Jarak untuk /harga adalah total jemput "
+        "+ antar."
     )
 
 
@@ -200,9 +221,10 @@ async def tawar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def catat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = _ensure_user(update, context)
-    if len(context.args) != 2:
+    if len(context.args) not in {3, 4}:
         await update.effective_message.reply_text(
-            "Format: /catat <jarak_km> <harga_rupiah>, contoh /catat 4.5 20000"
+            "Format: /catat <jarak_km> <harga_rupiah> <waktu_diterima> "
+            "[id_order]. Contoh: /catat 4.5 20000 14:13 ORDER-123"
         )
         return
     try:
@@ -218,9 +240,122 @@ async def catat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    _database(context).add_order(user_id, distance_km, price)
+    try:
+        accepted_at = _parse_accepted_at(
+            context.args[2],
+            datetime.now(CITY.timezone),
+        )
+    except ValueError as error:
+        await update.effective_message.reply_text(str(error))
+        return
+
+    order_id = context.args[3].strip() if len(context.args) == 4 else None
+    if order_id is not None and (not order_id.strip() or len(order_id) > 100):
+        await update.effective_message.reply_text(
+            "ID order harus berisi 1–100 karakter tanpa spasi kosong."
+        )
+        return
+    try:
+        _database(context).add_order(
+            user_id,
+            distance_km,
+            price,
+            accepted_at=accepted_at,
+            order_id=order_id,
+        )
+    except DuplicateOrderError:
+        await update.effective_message.reply_text(
+            "ID order tersebut sudah tercatat; data tidak ditambahkan lagi."
+        )
+        return
     await update.effective_message.reply_text(
         f"Order tersimpan: {distance_km:g} km, {format_rupiah(price)}."
+    )
+
+
+def _parse_accepted_at(value: str, now_local: datetime) -> datetime:
+    try:
+        accepted_at = datetime.strptime(value, "%H:%M").replace(
+            year=now_local.year,
+            month=now_local.month,
+            day=now_local.day,
+            tzinfo=CITY.timezone,
+        )
+    except ValueError:
+        try:
+            accepted_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError(
+                "Waktu diterima harus HH:MM (hari ini) atau "
+                "YYYY-MM-DDTHH:MM, dalam WIB."
+            ) from error
+        if accepted_at.tzinfo is None:
+            accepted_at = accepted_at.replace(tzinfo=CITY.timezone)
+        else:
+            accepted_at = accepted_at.astimezone(CITY.timezone)
+
+    if accepted_at > now_local:
+        raise ValueError("Waktu diterima tidak boleh berada di masa depan.")
+    return accepted_at
+
+
+async def harga(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = _ensure_user(update, context)
+    min_per_km, max_per_km = _database(context).get_price_range(
+        user_id,
+        RP_PER_KM_MIN,
+        RP_PER_KM_MAX,
+    )
+    sent_message = await update.effective_message.reply_text(
+        format_price_table(min_per_km, max_per_km)
+    )
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=update.effective_chat.id,
+            message_id=sent_message.message_id,
+            disable_notification=True,
+        )
+    except TelegramError:
+        logger.exception("Gagal menyematkan tabel harga untuk pengguna %s", user_id)
+        await update.effective_message.reply_text(
+            "Tabel harga sudah dikirim, tetapi Telegram tidak mengizinkan bot "
+            "menyematkannya di chat ini."
+        )
+
+
+async def setkm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = _ensure_user(update, context)
+    if len(context.args) != 2:
+        await update.effective_message.reply_text(
+            "Format: /setkm <minimal_rupiah_per_km> <maksimal_rupiah_per_km>, "
+            "contoh /setkm 1950 2500."
+        )
+        return
+    try:
+        min_per_km, max_per_km = map(int, context.args)
+        validate_price_rates(min_per_km, max_per_km)
+    except ValueError:
+        await update.effective_message.reply_text(
+            "Format harus berupa dua bilangan bulat positif dan nilai minimal "
+            "tidak boleh melebihi maksimal. Contoh: /setkm 1950 2500."
+        )
+        return
+
+    _database(context).set_price_range(user_id, min_per_km, max_per_km)
+    await update.effective_message.reply_text(
+        "Patokan harga diperbarui: "
+        f"{format_rupiah(min_per_km)}–{format_rupiah(max_per_km)}/km. "
+        "Gunakan /harga untuk melihat tabel."
+    )
+
+
+async def resetharga(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = _ensure_user(update, context)
+    _database(context).reset_price_range(user_id)
+    await update.effective_message.reply_text(
+        "Patokan harga dikembalikan ke default "
+        f"{format_rupiah(RP_PER_KM_MIN)}–"
+        f"{format_rupiah(RP_PER_KM_MAX)}/km."
     )
 
 
@@ -230,26 +365,106 @@ async def rekap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_local = start_local + timedelta(days=1)
     orders = _database(context).get_orders(user_id, start_local, end_local)
-    if not orders:
-        await update.effective_message.reply_text(
-            "Belum ada order tercatat hari ini. Gunakan /catat setelah order selesai."
-        )
-        return
+    min_per_km, max_per_km = _database(context).get_price_range(
+        user_id,
+        RP_PER_KM_MIN,
+        RP_PER_KM_MAX,
+    )
+    await update.effective_message.reply_text(
+        _build_recap_message(orders, now, min_per_km, max_per_km)
+    )
 
+
+def _stored_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(CITY.timezone)
+
+
+def _build_recap_message(
+    orders: list[dict[str, object]],
+    now: datetime,
+    min_per_km: int,
+    max_per_km: int,
+) -> str:
     total_income = sum(int(order["price"]) for order in orders)
     total_distance = sum(float(order["distance_km"]) for order in orders)
-    by_hour: dict[int, int] = {}
+    by_hour: dict[int, tuple[int, int]] = {}
     for order in orders:
-        created_at = datetime.fromisoformat(order["created_at"]).astimezone(CITY.timezone)
-        by_hour[created_at.hour] = by_hour.get(created_at.hour, 0) + int(order["price"])
-    best_hour, best_income = max(by_hour.items(), key=lambda item: item[1])
-    await update.effective_message.reply_text(
+        completed_at = _stored_datetime(str(order["completed_at"]))
+        income, count = by_hour.get(completed_at.hour, (0, 0))
+        by_hour[completed_at.hour] = income + int(order["price"]), count + 1
+
+    if by_hour:
+        best_hour, (best_income, _) = max(
+            by_hour.items(),
+            key=lambda item: (item[1][0], item[1][1], -item[0]),
+        )
+        best_hour_text = (
+            f"{best_hour:02d}.00–{(best_hour + 1) % 24:02d}.00 "
+            f"({format_rupiah(best_income)})"
+        )
+    else:
+        best_hour_text = "-"
+
+    accepted_times = [
+        _stored_datetime(str(order["accepted_at"]))
+        for order in orders
+        if order["accepted_at"] is not None
+    ]
+    if orders and len(accepted_times) == len(orders):
+        started_at = min(accepted_times)
+        finished_at = max(
+            _stored_datetime(str(order["completed_at"])) for order in orders
+        )
+        duration_seconds = int((finished_at - started_at).total_seconds())
+        if duration_seconds > 0:
+            duration_minutes = duration_seconds // 60
+            duration_hours, remaining_minutes = divmod(duration_minutes, 60)
+            duration_text = f"{duration_hours} j {remaining_minutes:02d} m"
+            income_per_hour = int(
+                total_income / (duration_seconds / 3600) / 100 + 0.5
+            ) * 100
+            income_per_hour_text = format_rupiah(income_per_hour)
+        else:
+            duration_text = "tidak tersedia (durasi tidak valid)"
+            income_per_hour_text = "-"
+    elif orders:
+        duration_text = "tidak tersedia (waktu diterima belum tercatat)"
+        income_per_hour_text = "-"
+    else:
+        duration_text = "-"
+        income_per_hour_text = "-"
+
+    if total_distance > 0:
+        income_per_km = total_income / total_distance
+        if income_per_km < min_per_km:
+            status = "di bawah rentang"
+        elif income_per_km > max_per_km:
+            status = "di atas rentang"
+        else:
+            status = "dalam rentang"
+        income_per_km_text = (
+            f"{format_rupiah(round(income_per_km))} "
+            f"(patokan {format_rupiah(min_per_km)}–"
+            f"{format_rupiah(max_per_km)}, {status})"
+        )
+    else:
+        income_per_km_text = (
+            f"- (patokan {format_rupiah(min_per_km)}–"
+            f"{format_rupiah(max_per_km)}, belum ada jarak tercatat)"
+        )
+
+    return (
         f"Rekap hari ini ({now:%d-%m-%Y} WIB)\n"
         f"• Order: {len(orders)}\n"
         f"• Pendapatan: {format_rupiah(total_income)}\n"
         f"• Jarak tercatat: {total_distance:g} km\n"
-        f"• Jam terbaik: {best_hour:02d}.00–{(best_hour + 1) % 24:02d}.00 "
-        f"({format_rupiah(best_income)})"
+        f"• Durasi narik: {duration_text}\n"
+        f"• Pendapatan/jam: {income_per_hour_text}\n"
+        f"• Pendapatan/km: {income_per_km_text}\n"
+        f"• Jam terbaik: {best_hour_text}"
     )
 
 
@@ -331,6 +546,9 @@ def create_application(token: str, database: Database) -> Application:
     application.add_handler(CommandHandler("jam", jam))
     application.add_handler(CommandHandler("alert", alert))
     application.add_handler(CommandHandler("tawar", tawar))
+    application.add_handler(CommandHandler("harga", harga))
+    application.add_handler(CommandHandler("setkm", setkm))
+    application.add_handler(CommandHandler("resetharga", resetharga))
     application.add_handler(CommandHandler("catat", catat))
     application.add_handler(CommandHandler("rekap", rekap))
     application.add_handler(CallbackQueryHandler(feedback, pattern=r"^feedback:"))

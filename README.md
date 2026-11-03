@@ -28,8 +28,21 @@ Database SQLite dibuat otomatis di `driver_bot.sqlite3`. Atur `DATABASE_PATH` un
 | `/jam` | Pola jam puncak menurut jenis lokasi |
 | `/alert on` / `/alert off` | Mengaktifkan atau mematikan pengingat |
 | `/tawar 4.5` | Saran rentang tarif untuk jarak 4,5 km |
-| `/catat 4.5 20000` | Mencatat jarak dan pendapatan order selesai |
-| `/rekap` | Rekap order, pendapatan, jarak, dan jam terbaik hari ini |
+| `/harga` | Menampilkan dan menyematkan tabel saran harga total jarak jemput + antar |
+| `/setkm 1950 2500` | Mengatur patokan harga minimum dan maksimum per km |
+| `/resetharga` | Mengembalikan patokan harga ke Rp1.950–2.500/km |
+| `/catat 4.5 20000 14:13 [ID]` | Mencatat jarak total, pendapatan, waktu order diterima, dan ID opsional |
+| `/rekap` | Rekap order, pendapatan, durasi, pendapatan/jam dan /km, serta jam terbaik |
+
+Waktu `/catat` menggunakan WIB. Isi `HH:MM` untuk waktu diterima hari ini atau
+`YYYY-MM-DDTHH:MM` untuk tanggal dan waktu lengkap. ID order bersifat opsional;
+ID yang sama tidak dapat dicatat dua kali. Untuk data lama yang belum memiliki
+waktu diterima, rekap menandai durasi dan pendapatan/jam sebagai tidak tersedia.
+Pengaturan `/setkm` disimpan per pengguna. `/harga` memakai batas atas tiap
+rentang jarak (0–5, 5–10, 10–15, dan 15–20 km), membulatkan ke atas ke Rp500,
+serta menampilkan formula untuk jarak di atas 20 km. Nilai awal tabel dan
+pembulatan dapat disesuaikan melalui `RP_PER_KM_MIN`, `RP_PER_KM_MAX`, dan
+`PEMBULATAN` di `config.py`.
 
 Pengguna tetap mengirim `/start` dan mengaktifkan `/alert on` untuk menerima pesan terjadwal. Alert dijadwalkan menurut zona waktu Bandung (WIB).
 

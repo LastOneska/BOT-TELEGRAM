@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from math import ceil, floor, isfinite
 
 from config import (
+    PEMBULATAN,
     PEAK_PRICE_MULTIPLIER,
     PICKUP_FEE,
     PRICE_PER_KM,
@@ -42,3 +43,50 @@ def suggest_price(distance_km: float, is_peak: bool, is_raining: bool) -> PriceS
 
 def format_rupiah(amount: int) -> str:
     return f"Rp{amount:,}".replace(",", ".")
+
+
+def validate_price_rates(min_per_km: int, max_per_km: int) -> None:
+    if min_per_km <= 0 or max_per_km <= 0:
+        raise ValueError("Tarif per kilometer harus lebih dari 0.")
+    if min_per_km > max_per_km:
+        raise ValueError("Tarif minimum tidak boleh melebihi tarif maksimum.")
+
+
+def _round_price_up(amount: float) -> int:
+    return ceil(amount / PEMBULATAN) * PEMBULATAN
+
+
+def price_range_for_distance(
+    distance_km: float, min_per_km: int, max_per_km: int
+) -> tuple[int, int]:
+    validate_price_rates(min_per_km, max_per_km)
+    if not isfinite(distance_km) or distance_km <= 0:
+        raise ValueError("Jarak harus lebih dari 0 km.")
+    return (
+        _round_price_up(distance_km * min_per_km),
+        _round_price_up(distance_km * max_per_km),
+    )
+
+
+def format_price_table(min_per_km: int, max_per_km: int) -> str:
+    validate_price_rates(min_per_km, max_per_km)
+    lines = [
+        "Saran harga — total jarak jemput + antar",
+        "Jarak       Minimal       Maksimal",
+    ]
+    for lower_bound, upper_bound in ((0, 5), (5, 10), (10, 15), (15, 20)):
+        minimum, maximum = price_range_for_distance(
+            upper_bound, min_per_km, max_per_km
+        )
+        lines.append(
+            f"{lower_bound}–{upper_bound} km    {format_rupiah(minimum)}    "
+            f"{format_rupiah(maximum)}"
+        )
+    lines.extend(
+        [
+            f">20 km       {format_rupiah(min_per_km)} × jarak    "
+            f"{format_rupiah(max_per_km)} × jarak",
+            "Harga dibulatkan ke atas ke kelipatan Rp500.",
+        ]
+    )
+    return "\n".join(lines)

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
+TIMEZONE = "Asia/Jakarta"
+
 
 @dataclass(frozen=True)
 class City:
@@ -23,7 +25,7 @@ CITY = City(
     latitude=-6.9175,
     longitude=107.6191,
     bbox=(-7.05, 107.52, -6.84, 107.75),
-    timezone=ZoneInfo("Asia/Jakarta"),
+    timezone=ZoneInfo(TIMEZONE),
 )
 
 CATEGORIES = {
@@ -53,6 +55,9 @@ PICKUP_FEE = 5_000
 PEAK_PRICE_MULTIPLIER = 1.15
 RAIN_PRICE_MULTIPLIER = 1.10
 PRICE_RANGE_MARGIN = 0.05
+RP_PER_KM_MIN = 1_950
+RP_PER_KM_MAX = 2_500
+PEMBULATAN = 500
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OVERPASS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
