@@ -19,6 +19,14 @@ class PriceSuggestion:
     is_raining: bool
 
 
+@dataclass(frozen=True)
+class OfferAssessment:
+    price_per_km: float
+    minimum_price: int
+    maximum_price: int
+    status: str
+
+
 def suggest_price(distance_km: float, is_peak: bool, is_raining: bool) -> PriceSuggestion:
     if not isfinite(distance_km) or not 0 < distance_km <= 300:
         raise ValueError("Jarak harus lebih dari 0 dan maksimal 300 km.")
@@ -65,6 +73,34 @@ def price_range_for_distance(
     return (
         _round_price_up(distance_km * min_per_km),
         _round_price_up(distance_km * max_per_km),
+    )
+
+
+def assess_offer(
+    distance_km: float,
+    offered_price: int,
+    min_per_km: int,
+    max_per_km: int,
+) -> OfferAssessment:
+    if not isfinite(distance_km) or not 0 < distance_km <= 300:
+        raise ValueError("Jarak total harus lebih dari 0 dan maksimal 300 km.")
+    if offered_price <= 0:
+        raise ValueError("Tawaran harus lebih dari Rp0.")
+    minimum_price, maximum_price = price_range_for_distance(
+        distance_km, min_per_km, max_per_km
+    )
+    price_per_km = offered_price / distance_km
+    if price_per_km < min_per_km:
+        status = "di bawah patokan minimum"
+    elif price_per_km > max_per_km:
+        status = "di atas patokan maksimum"
+    else:
+        status = "dalam rentang patokan"
+    return OfferAssessment(
+        price_per_km=price_per_km,
+        minimum_price=minimum_price,
+        maximum_price=maximum_price,
+        status=status,
     )
 
 

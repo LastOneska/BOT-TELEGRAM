@@ -29,6 +29,7 @@ from prediction import (
     score_hotspot,
 )
 from pricing import (
+    assess_offer,
     format_price_table,
     format_rupiah,
     suggest_price,
@@ -44,6 +45,45 @@ def _database(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.application.bot_data["database"]
 
 
+def _hotspot_directions_url(latitude: float, longitude: float) -> str:
+    if (
+        not isfinite(latitude)
+        or not isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        raise ValueError("Koordinat lokasi tidak valid.")
+    return f"https://maps.apple.com/?daddr={latitude:.6f},{longitude:.6f}&dirflg=d"
+
+
+def _hotspot_keyboard(areas: list[dict[str, object]]) -> InlineKeyboardMarkup:
+    rows = []
+    for index, area in enumerate(areas, start=1):
+        try:
+            latitude = float(area["latitude"])
+            longitude = float(area["longitude"])
+            url = _hotspot_directions_url(latitude, longitude)
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Melewati tautan rute untuk titik ramai ke-%s: koordinat tidak valid", index)
+            continue
+        name = str(area.get("name", "Titik ramai")).strip() or "Titik ramai"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"🧭 Rute {index}: {name[:40]}",
+                    url=url,
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton("👍 Akurat", callback_data="feedback:up"),
+            InlineKeyboardButton("👎 Kurang akurat", callback_data="feedback:down"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
 def _ensure_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.effective_user is None:
         raise RuntimeError("Telegram update does not contain a user.")
@@ -57,10 +97,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Halo! Saya asisten informasi untuk driver ojol di Bandung.\n\n"
         "• /ramai — prediksi 5 area yang berpotensi ramai\n"
+        "  (tautan rute memakai lokasi asli perangkat)\n"
         "• /jam — jadwal puncak berdasarkan jenis lokasi\n"
         "• /alert on atau /alert off — atur pengingat\n"
         "• /tawar <km> — hitung rentang saran tarif\n"
         "• /harga — lihat tabel saran harga total jemput + antar\n"
+        "• /cekorder <km_total> <tawaran> — bandingkan tawaran dengan patokan\n"
         "• /catat <km> <harga> <waktu_diterima> [id_order]\n"
         "  — simpan order yang selesai\n"
         "• /rekap — lihat pendapatan hari ini\n"
@@ -78,6 +120,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Contoh penggunaan:\n"
         "• /tawar 4.5\n"
         "• /harga\n"
+        "• /cekorder 6.5 15000\n"
         "• /catat 4.5 20000 14:13\n"
         "• /catat 4.5 20000 2026-11-02T14:13 ORDER-123\n"
         "• /setkm 1950 2500\n"
@@ -87,6 +130,52 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "rupiah tanpa pemisah, dan waktu diterima dalam WIB (HH:MM untuk hari "
         "ini atau YYYY-MM-DDTHH:MM). Jarak untuk /harga adalah total jemput "
         "+ antar."
+    )
+
+
+async def cekorder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = _ensure_user(update, context)
+    if len(context.args) != 2:
+        await update.effective_message.reply_text(
+            "Format: /cekorder <total_jarak_km> <tawaran_rupiah>, "
+            "contoh /cekorder 6.5 15000. Total jarak mencakup jemput + antar."
+        )
+        return
+    try:
+        distance_km = float(context.args[0].replace(",", "."))
+        offered_price = int(context.args[1])
+        if not isfinite(distance_km) or not 0 < distance_km <= 300:
+            raise ValueError
+        if not 1_000 <= offered_price <= 10_000_000:
+            raise ValueError
+    except ValueError:
+        await update.effective_message.reply_text(
+            "Jarak total harus lebih dari 0 dan maksimal 300 km; tawaran harus "
+            "Rp1.000–Rp10.000.000. Gunakan angka rupiah tanpa pemisah."
+        )
+        return
+
+    min_per_km, max_per_km = _database(context).get_price_range(
+        user_id,
+        RP_PER_KM_MIN,
+        RP_PER_KM_MAX,
+    )
+    assessment = assess_offer(
+        distance_km,
+        offered_price,
+        min_per_km,
+        max_per_km,
+    )
+    await update.effective_message.reply_text(
+        f"Evaluasi tawaran (total {distance_km:g} km)\n"
+        f"• Tawaran: {format_rupiah(offered_price)} "
+        f"({format_rupiah(round(assessment.price_per_km))}/km)\n"
+        f"• Acuan harga (dibulatkan): {format_rupiah(assessment.minimum_price)}–"
+        f"{format_rupiah(assessment.maximum_price)}\n"
+        f"• Status per km: {assessment.status}\n\n"
+        "Ini hanya pembanding berdasarkan patokan Anda, bukan keputusan "
+        "otomatis. Periksa biaya dan kondisi order; keputusan tetap Anda "
+        "lakukan manual di inDrive."
     )
 
 
@@ -131,12 +220,7 @@ async def ramai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if weather_notice:
         lines.append(weather_notice.strip())
 
-    keyboard = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton("👍 Akurat", callback_data="feedback:up"),
-            InlineKeyboardButton("👎 Kurang akurat", callback_data="feedback:down"),
-        ]]
-    )
+    keyboard = _hotspot_keyboard(ranked)
     await update.effective_message.reply_text(
         "\n".join(lines),
         reply_markup=keyboard,
@@ -547,6 +631,7 @@ def create_application(token: str, database: Database) -> Application:
     application.add_handler(CommandHandler("alert", alert))
     application.add_handler(CommandHandler("tawar", tawar))
     application.add_handler(CommandHandler("harga", harga))
+    application.add_handler(CommandHandler("cekorder", cekorder))
     application.add_handler(CommandHandler("setkm", setkm))
     application.add_handler(CommandHandler("resetharga", resetharga))
     application.add_handler(CommandHandler("catat", catat))

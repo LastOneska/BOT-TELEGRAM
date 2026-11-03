@@ -4,9 +4,15 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bot import _build_recap_message, _parse_accepted_at
+from bot import (
+    _build_recap_message,
+    _hotspot_directions_url,
+    _hotspot_keyboard,
+    _parse_accepted_at,
+)
 from database import Database, DuplicateOrderError
 from pricing import (
+    assess_offer,
     format_price_table,
     format_rupiah,
     price_range_for_distance,
@@ -51,6 +57,21 @@ class PricingTests(unittest.TestCase):
         self.assertIn(">20 km       Rp1.950 × jarak    Rp2.500 × jarak", table)
         with self.assertRaises(ValueError):
             validate_price_rates(2_600, 2_000)
+
+    def test_assesses_offer_against_per_user_per_km_range(self) -> None:
+        below = assess_offer(5, 9_000, 1_950, 2_500)
+        within = assess_offer(5, 10_000, 1_950, 2_500)
+        above = assess_offer(5, 13_000, 1_950, 2_500)
+        self.assertEqual(below.status, "di bawah patokan minimum")
+        self.assertEqual(within.status, "dalam rentang patokan")
+        self.assertEqual(above.status, "di atas patokan maksimum")
+        self.assertEqual((within.minimum_price, within.maximum_price), (10_000, 12_500))
+
+    def test_offer_assessment_rejects_invalid_values(self) -> None:
+        with self.assertRaises(ValueError):
+            assess_offer(0, 10_000, 1_950, 2_500)
+        with self.assertRaises(ValueError):
+            assess_offer(5, 0, 1_950, 2_500)
 
 
 class PredictionTests(unittest.TestCase):
@@ -108,6 +129,33 @@ class HotspotTests(unittest.TestCase):
         self.assertEqual(len(areas), 1)
         self.assertEqual(areas[0]["category"], "station")
         self.assertEqual(areas[0]["name"], "Stasiun Contoh")
+
+    def test_hotspot_route_uses_actual_destination_coordinates(self) -> None:
+        self.assertEqual(
+            _hotspot_directions_url(-6.9, 107.6),
+            "https://maps.apple.com/?daddr=-6.900000,107.600000&dirflg=d",
+        )
+        with self.assertRaises(ValueError):
+            _hotspot_directions_url(91, 107.6)
+
+    def test_hotspot_keyboard_contains_route_and_feedback_buttons(self) -> None:
+        keyboard = _hotspot_keyboard(
+            [
+                {
+                    "name": "Stasiun Contoh",
+                    "latitude": -6.9,
+                    "longitude": 107.6,
+                }
+            ]
+        )
+        self.assertEqual(
+            keyboard.inline_keyboard[0][0].url,
+            "https://maps.apple.com/?daddr=-6.900000,107.600000&dirflg=d",
+        )
+        self.assertEqual(
+            [button.callback_data for button in keyboard.inline_keyboard[-1]],
+            ["feedback:up", "feedback:down"],
+        )
 
 
 class DatabaseTests(unittest.TestCase):

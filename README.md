@@ -24,11 +24,12 @@ Database SQLite dibuat otomatis di `driver_bot.sqlite3`. Atur `DATABASE_PATH` un
 | Perintah | Fungsi |
 |---|---|
 | `/start` atau `/help` | Panduan penggunaan |
-| `/ramai` | Lima lokasi dengan skor prediksi tertinggi saat ini |
+| `/ramai` | Lima lokasi dengan skor prediksi tertinggi dan tombol navigasi ke tiap titik |
 | `/jam` | Pola jam puncak menurut jenis lokasi |
 | `/alert on` / `/alert off` | Mengaktifkan atau mematikan pengingat |
 | `/tawar 4.5` | Saran rentang tarif untuk jarak 4,5 km |
 | `/harga` | Menampilkan dan menyematkan tabel saran harga total jarak jemput + antar |
+| `/cekorder 6.5 15000` | Membandingkan tawaran dengan patokan per km; keputusan tetap manual |
 | `/setkm 1950 2500` | Mengatur patokan harga minimum dan maksimum per km |
 | `/resetharga` | Mengembalikan patokan harga ke Rp1.950–2.500/km |
 | `/catat 4.5 20000 14:13 [ID]` | Mencatat jarak total, pendapatan, waktu order diterima, dan ID opsional |
@@ -43,6 +44,14 @@ rentang jarak (0–5, 5–10, 10–15, dan 15–20 km), membulatkan ke atas ke R
 serta menampilkan formula untuk jarak di atas 20 km. Nilai awal tabel dan
 pembulatan dapat disesuaikan melalui `RP_PER_KM_MIN`, `RP_PER_KM_MAX`, dan
 `PEMBULATAN` di `config.py`.
+
+Bot tidak membaca atau mengendalikan aplikasi inDrive, tidak menerima/menolak
+order otomatis, tidak memalsukan GPS, dan tidak menghubungkan penumpang dengan
+driver lewat Telegram. Tombol rute di `/ramai` membuka Apple Maps menuju
+koordinat hotspot dan menggunakan lokasi perangkat yang sebenarnya untuk
+navigasi; tombol tersebut tidak memindahkan lokasi driver. Penumpang tetap
+memesan melalui inDrive; `/cekorder` hanya membantu driver membandingkan
+tawaran yang dimasukkan sendiri dengan patokan harga.
 
 Pengguna tetap mengirim `/start` dan mengaktifkan `/alert on` untuk menerima pesan terjadwal. Alert dijadwalkan menurut zona waktu Bandung (WIB).
 

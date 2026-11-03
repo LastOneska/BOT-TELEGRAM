@@ -48,6 +48,17 @@ Tujuan v1.1: rekap harian akurat, dan driver punya patokan harga yang bisa dibac
 - Bot menerima atau menolak order otomatis.
 - Bot membaca atau mengotomatisasi layar aplikasi inDrive.
 - Bot membuat penumpang memakai Telegram (penumpang tetap order lewat inDrive).
+- fake gps untuk memindahkan lokasi driver ke titik ramai.
+
+**Keputusan implementasi (03-11-2026):** driver menggunakan iPhone dan tidak
+memiliki API/integrasi resmi inDrive. Bot tidak membaca layar/notifikasi,
+tidak menerima atau menolak order, tidak memalsukan GPS, serta tidak
+memindahkan pemesanan penumpang ke Telegram. Cakupan yang feasible adalah
+`/cekorder <km_total> <tawaran>`: driver memasukkan jarak total dan tawaran
+sendiri, bot membandingkannya dengan patokan harga per km, lalu driver
+memutuskan secara manual di inDrive. Sebagai alternatif fake GPS, `/ramai`
+menyediakan tautan navigasi biasa ke titik hotspot melalui lokasi asli iPhone;
+tautan tidak mengubah lokasi perangkat atau aplikasi lain.
 
 ## Fitur A: Perbaikan Bug Jam Terbaik
 
@@ -139,9 +150,11 @@ Perubahan teknis kecil: simpan waktu order dengan benar, konversi ke WIB saat me
 - `RP_PER_KM_MIN = 1950` dan `RP_PER_KM_MAX = 2500`; tabel harga dihitung dari dua angka ini dan bisa diubah lewat `/setkm`.
 - `PEMBULATAN = 500`.
 
-**Perintah bot baru:** `/harga`, `/setkm`, `/resetharga`.
+**Perintah bot baru:** `/harga`, `/setkm`, `/resetharga`, dan `/cekorder`.
 
-**Batasan:** bot hanya memakai data yang sudah masuk ke sistemnya. Cara data order masuk (input driver, notifikasi, atau cara lain) tidak diubah di v1.1.
+**Batasan:** bot hanya memakai data yang sudah masuk ke sistemnya. Cara data order masuk (input driver, notifikasi, atau cara lain) tidak diubah di v1.1. Bot tidak memalsukan GPS; tautan navigasi hotspot memakai lokasi aktual perangkat.
+`/cekorder` menggunakan input manual; tidak membaca order dari aplikasi dan
+tidak membuat keputusan otomatis.
 
 ## Acceptance Criteria dan Test Plan
 
@@ -156,6 +169,7 @@ v1.1 dianggap selesai jika semua skenario di bawah lolos dan rekap memakai data 
 | Rekap dikirim jam 21.14 | Hasil Jam Terbaik sama persis dengan jika dikirim jam 23.00 |
 | Rekap 02-11-2026 (Rp2.325/km) | Status "dalam rentang" terhadap patokan Rp1.950–2.500 |
 | `/harga` | Tabel saran harga muncul dalam satu pesan |
+| `/cekorder 5 10000` | Membandingkan tawaran dengan patokan Rp1.950–2.500/km tanpa tindakan otomatis |
 | `/setkm 2000 2600` | Baris 0–5 km jadi Rp10.000–13.000, rekap berikutnya memakai rentang baru |
 | `/setkm` dengan format salah, atau min lebih besar dari maks | Bot membalas contoh format yang benar, tabel tidak berubah |
 | `/resetharga` | Rentang kembali ke Rp1.950–2.500/km |
